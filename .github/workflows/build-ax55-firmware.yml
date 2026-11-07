@@ -52,6 +52,36 @@ jobs:
           cp ax55-fixes/src/0002-*.patch "$PATCH_DIR/"
           ls -l "$PATCH_DIR"/000{1,2}-*.patch
 
+      # Linux 6.18 split its crypto libraries into separate Kconfig units.
+      # Build these libraries into vmlinux so the AWG external module
+      # can resolve their exported symbols during MODPOST.
+      - name: Enable required Linux 6.18 crypto library symbols
+        run: |
+          set -euo pipefail
+          python3 - <<'PYCODE'
+          from pathlib import Path
+          kernel_config = Path('openwrt/target/linux/generic/config-6.18')
+          data = kernel_config.read_text()
+          symbols = (
+              'CRYPTO_LIB_CHACHA',
+              'CRYPTO_LIB_POLY1305',
+              'CRYPTO_LIB_CHACHA20POLY1305',
+              'CRYPTO_LIB_CURVE25519',
+          )
+          for symbol in symbols:
+              unset = f'# CONFIG_{symbol} is not set'
+              set_y = f'CONFIG_{symbol}=y'
+              if unset in data:
+                  data = data.replace(unset, set_y)
+              elif set_y not in data:
+                  raise SystemExit(f'Cannot safely enable {symbol}: entry not found')
+          kernel_config.write_text(data)
+          for symbol in symbols:
+              assert f'CONFIG_{symbol}=y' in data
+          print('Kernel crypto libraries enabled as built-ins:')
+          print('\n'.join(f'CONFIG_{name}=y' for name in symbols))
+          PYCODE
+
       - name: Add AWG packages from this repository
         run: |
           set -euo pipefail
@@ -91,7 +121,10 @@ jobs:
 
       - name: Build full firmware and all matching packages
         working-directory: openwrt
-        run: make -j2 V=s
+        run: |
+          set -euo pipefail
+          # Keep CI logs readable; verbose output can obscure first errors.
+          make -j2
 
       - name: Check firmware image and included packages
         run: |

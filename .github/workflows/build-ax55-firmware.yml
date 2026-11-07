@@ -18,7 +18,7 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: openwrt/openwrt
-          ref: bb8054e847
+          ref: bb8054e84763a88c5328d4563d027bed570c14e9
           path: openwrt
           persist-credentials: false
 

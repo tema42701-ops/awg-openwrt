@@ -1,0 +1,53 @@
+name: Build AWG tools 3.1 for OpenWrt ARM64
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    steps:
+      - name: Checkout AmneziaWG tools 3.1
+        uses: actions/checkout@v4
+        with:
+          repository: amnezia-vpn/amneziawg-tools
+          ref: v3.1.20260812
+          path: tools
+          persist-credentials: false
+
+      - name: Enable ARM64 emulation
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm64
+
+      - name: Build static ARM64 awg tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          docker run --rm --platform linux/arm64 \
+            -v "$PWD:/work" -w /work/tools \
+            alpine:3.21 sh -ec '
+              apk add --no-cache build-base linux-headers git file
+              make -C src -j2 LDFLAGS=-static WITH_WGQUICK=no
+              strip src/wg
+              file src/wg
+              file src/wg | grep -q "ARM aarch64"
+              file src/wg | grep -q "statically linked"
+              src/wg --version
+              cp src/wg /work/out/awg
+              cd /work/out
+              sha256sum awg > awg.sha256
+            '
+
+      - name: Upload ARM64 tools
+        uses: actions/upload-artifact@v4
+        with:
+          name: amneziawg-tools-3.1-static-arm64
+          path: out/
+          if-no-files-found: error
+          retention-days: 7

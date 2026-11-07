@@ -1,0 +1,120 @@
+name: Build AX55 v1 - OpenWrt AWG 3.1
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    steps:
+      - name: Checkout AmneziaWG 3.1 packages
+        uses: actions/checkout@v4
+
+      - name: Checkout pinned OpenWrt source
+        uses: actions/checkout@v4
+        with:
+          repository: openwrt/openwrt
+          ref: bb8054e847
+          path: openwrt
+          persist-credentials: false
+
+      - name: Checkout AX55 Ethernet fixes
+        uses: actions/checkout@v4
+        with:
+          repository: kuncy7/openwrt-ax55-v1
+          ref: master
+          path: ax55-fixes
+          persist-credentials: false
+
+      - name: Free space and install dependencies
+        run: |
+          set -euo pipefail
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache
+          sudo apt-get update
+          sudo apt-get install -y build-essential clang flex bison g++ gawk \
+            gettext git libncurses-dev libssl-dev python3 python3-pyelftools \
+            python3-setuptools python3-yaml rsync unzip wget zlib1g-dev \
+            file ccache subversion quilt libelf-dev zstd
+          df -h .
+
+      - name: Apply both RTL8367S cold-boot fixes
+        run: |
+          set -euo pipefail
+          PATCH_DIR=openwrt/target/linux/generic/pending-6.18
+          test -d "$PATCH_DIR"
+          test "$(find ax55-fixes/src -maxdepth 1 -name '0001-*.patch' | wc -l)" -eq 1
+          test "$(find ax55-fixes/src -maxdepth 1 -name '0002-*.patch' | wc -l)" -eq 1
+          cp ax55-fixes/src/0001-*.patch "$PATCH_DIR/"
+          cp ax55-fixes/src/0002-*.patch "$PATCH_DIR/"
+          ls -l "$PATCH_DIR"/000{1,2}-*.patch
+
+      - name: Add AWG packages from this repository
+        run: |
+          set -euo pipefail
+          cp -a kmod-amneziawg amneziawg-tools luci-proto-amneziawg openwrt/package/
+
+      - name: Configure OpenWrt for AX55
+        working-directory: openwrt
+        run: |
+          set -euo pipefail
+          ./scripts/feeds update -a
+          ./scripts/feeds install -a
+          cat > .config <<'CONFIG'
+          CONFIG_TARGET_qualcommax=y
+          CONFIG_TARGET_qualcommax_ipq50xx=y
+          CONFIG_TARGET_qualcommax_ipq50xx_DEVICE_tplink_archer-ax55-v1=y
+          CONFIG_PACKAGE_luci=y
+          CONFIG_PACKAGE_luci-i18n-base-ru=y
+          CONFIG_PACKAGE_kmod-dsa-rtl8365mb=y
+          CONFIG_PACKAGE_kmod-amneziawg=y
+          CONFIG_PACKAGE_amneziawg-tools=y
+          CONFIG_PACKAGE_luci-proto-amneziawg=y
+          CONFIG_PACKAGE_luci-i18n-amneziawg-ru=y
+          CONFIG_PACKAGE_openssh-sftp-server=y
+          CONFIG_PACKAGE_ca-bundle=y
+          CONFIG
+          make defconfig
+          for package in kmod-amneziawg amneziawg-tools luci-proto-amneziawg; do
+            grep -Fqx "CONFIG_PACKAGE_${package}=y" .config || {
+              echo "Required package missing: ${package}"; exit 1;
+            }
+          done
+          grep -Fqx 'CONFIG_TARGET_qualcommax_ipq50xx_DEVICE_tplink_archer-ax55-v1=y' .config
+
+      - name: Download sources
+        working-directory: openwrt
+        run: make -j2 download
+
+      - name: Build full firmware and all matching packages
+        working-directory: openwrt
+        run: make -j2 V=s
+
+      - name: Check firmware image and included packages
+        run: |
+          set -euo pipefail
+          TARGET=openwrt/bin/targets/qualcommax/ipq50xx
+          find "$TARGET" -maxdepth 1 -type f -name '*tplink_archer-ax55-v1*squashfs-sysupgrade.bin' | grep .
+          MANIFEST=$(find "$TARGET" -maxdepth 1 -name '*.manifest' -print -quit)
+          test -n "$MANIFEST"
+          for package in kmod-amneziawg amneziawg-tools luci-proto-amneziawg luci; do
+            grep -E "^${package} " "$MANIFEST" || {
+              echo "Package missing from final image: ${package}"; exit 1;
+            }
+          done
+          sha256sum "$TARGET"/*tplink_archer-ax55-v1*squashfs-sysupgrade.bin
+          cp "$MANIFEST" "$TARGET/ax55-package-list.txt"
+
+      - name: Upload image and manifests
+        uses: actions/upload-artifact@v4
+        with:
+          name: ax55-v1-awg31-rtl8367s-fixed
+          path: |
+            openwrt/bin/targets/qualcommax/ipq50xx/*tplink_archer-ax55-v1*squashfs-sysupgrade.bin
+            openwrt/bin/targets/qualcommax/ipq50xx/ax55-package-list.txt
+            openwrt/bin/targets/qualcommax/ipq50xx/*.buildinfo
+          if-no-files-found: error
+          retention-days: 14

@@ -1,0 +1,44 @@
+name: Build AmneziaWG-Go 3.1 for OpenWrt ARM64
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout upstream AmneziaWG-Go 3.1
+        uses: actions/checkout@v4
+        with:
+          repository: amnezia-vpn/amneziawg-go
+          ref: v3.1.20260828
+          path: awg-go
+
+      - name: Set up Go version required by upstream
+        uses: actions/setup-go@v6
+        with:
+          go-version-file: awg-go/go.mod
+          cache: true
+          cache-dependency-path: awg-go/go.sum
+
+      - name: Cross-compile static ARM64 userspace daemon
+        working-directory: awg-go
+        env:
+          GOOS: linux
+          GOARCH: arm64
+          CGO_ENABLED: '0'
+        run: |
+          go build -trimpath -ldflags='-s -w' -o amneziawg-go .
+          file amneziawg-go
+          ls -lh amneziawg-go
+          sha256sum amneziawg-go > amneziawg-go.sha256
+
+      - name: Upload executable for testing
+        uses: actions/upload-artifact@v4
+        with:
+          name: amneziawg-go-3.1-linux-arm64
+          path: |
+            awg-go/amneziawg-go
+            awg-go/amneziawg-go.sha256
+          if-no-files-found: error
